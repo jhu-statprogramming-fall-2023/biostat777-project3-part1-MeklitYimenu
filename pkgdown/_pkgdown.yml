@@ -1,0 +1,32 @@
+url: ~
+template:
+  bootstrap: 5
+  theme: monochrome-light
+  bslib:
+    primary: "#6495ED"
+    fg : "#000000"
+    bg: "#FFFAFA"
+    base_font: {google: "DM Serif Display"}
+    heading_font: {google: "Playfair"}
+    code_font: {google: "Fira Code"}
+    code-bg: "#FFEFD5"
+reference:
+- title: "Exported Functions"
+  desc: >
+    Exported functions in this package.
+  contents:
+  - Plot
+  - bivariate
+  - numSummary
+  - charSummary
+  - removeSpecial
+navbar:
+  bg: primary
+  type: drak
+  structure:
+    left:  [intro, articles, reference]
+    right: [search, github]
+home:
+  sidebar:
+    structure: [links, citation, license]
+

@@ -12,3 +12,7 @@ BugReports: https://github.com/ujwlkarn/xda/issues
 License: GPL-3
 LazyData: true
 URL: http://github.com/ujwlkarn/xda
+Suggests: 
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr

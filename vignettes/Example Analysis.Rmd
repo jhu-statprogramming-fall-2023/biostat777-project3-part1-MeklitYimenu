@@ -1,0 +1,534 @@
+---
+title: "Example analysis"
+bibliography: project3.bib
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Example analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(xda)
+library(tidytuesdayR)
+library(conflicted)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(tidymodels)
+library(forcats)
+library(readr)
+```
+
+# European Energy Production
+
+## Introduction
+
+European consume a large amount of energy [@sonnichsen_primary_2023; @sonnichsen_global_2023]. As adequate energy production is essential for maintaining the continent's economy, transitioning from nonrenewable to renewable energy sources is crucial. Furthermore, shifting to renewable energy sources will significantly reduce carbon dioxide and other greenhouse gas emissions. As a result, due to dwindling nonrenewable energy sources and increasing global temperatures, European countries plan to rely primarily on renewable energy sources [@noauthor_community_nodate]. To that end, this analysis will aim to predict the amount of renewable energy that European countries will produce in a future year by using the amount of energy produced in previous years as a predictor.
+
+## Research Question
+
+This analysis aims to identify the relationship between the amount of energy produced in Europe in previous years and the amount of renewable energy needed for a future year. Furthermore, this relationship will be used to construct a model to make predictions.
+
+## Data
+
+The data sets used in this analysis were obtained from Eurostat's electricity generation statistics[@noauthor_european_nodate] and contain information regarding the type and amount of energy produced by European countries in 2016, 2017, and 2018. The data dictionary can be obtained from TidyTuesday[@noauthor_european_nodate].
+
+## Loading the Data
+
+```{bash eval=FALSE}
+# creating a new directory named Data if it doesn't exist
+if [ -d 'Data' ]; then
+    echo 'Directory exists'
+else
+    mkdir -p Data
+fi
+```
+
+```{r eval=FALSE, include=FALSE}
+# Get the data
+tuesdata <- tidytuesdayR::tt_load('2020-08-04')
+# saving the data
+energy_types <-write.table(tuesdata$energy_types, file = "energy_types.csv",sep = ",", row.names = F)
+country_totals <-write.table(tuesdata$country_totals, file = "country_totals.csv",sep = ",", row.names = F)
+```
+
+```{bash eval=FALSE}
+# moving that data sets into Data
+mv *.csv Data
+```
+
+```{r}
+# Read in locally
+energy_types<- read_csv("Data/energy_types.csv",show_col_types = FALSE)
+country_totals<- read_csv("Data/country_totals.csv",show_col_types = FALSE)
+```
+
+## Data Exploration
+
+```{r}
+# summary of the numerical variables in energy_types
+numSummary(energy_types)
+```
+
+```{r}
+# summary for the categorical variables in energy_types
+charSummary(energy_types)
+```
+
+In the `energy_types` data set there are 37 countries included and there are eight country names missing.
+
+```{r}
+# looking for the missing country_name values
+energy_types %>% 
+  dplyr::filter(is.na(country_name))
+```
+
+UK is missing a country name.
+
+```{r}
+# adding a country name for the UK
+energy_types <- energy_types %>% 
+  dplyr::mutate(country_name = case_when(country == 'UK' ~ 'United Kingdom', TRUE ~ country_name))
+```
+
+```{r}
+# summary for the categorical variables in country_totals
+charSummary(country_totals)
+```
+
+In the `country_totals` data set there are 37 countries included but there are five country names missing.
+
+```{r}
+# looking for the missing country name
+country_totals %>% 
+  dplyr::filter(is.na(country_name))
+```
+
+Again, the UK is missing a value for `country_name`.
+
+```{r}
+# adding a country name for the UK
+country_totals <- country_totals %>% 
+  dplyr::mutate(country_name = case_when(country == 'UK' ~ 'United Kingdom', TRUE ~ country_name))
+```
+
+```{r}
+# summary of the numerical variables in country_totals
+numSummary(country_totals)
+```
+
+There is one missing value for 2016 in the `country_totals` data set.
+
+```{r}
+# Replacing the missing value in 2016 to zero
+country_totals <- country_totals %>% 
+  dplyr::mutate_if(is.numeric, ~replace_na(., 0))
+```
+
+### Total Energy Production Data Set
+
+```{r}
+# In the `energy_types` data set, the energy produced by each country
+# is divided by energy type. Obtaining the combined total energy 
+# for each year is beneficial for this analysis.
+
+total_energy <- energy_types %>%
+  dplyr::group_by(country_name, country) %>%
+  dplyr::reframe( energytotal_2016 = sum(`2016`),
+                   energytotal_2017 = sum(`2017`),
+                   energytotal_2018 = sum(`2018`)) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_longer(cols = starts_with("energytotal_2"), names_to = "year", values_to = "energy_amount" )
+total_energy$year <- gsub("energytotal_", "", total_energy$year)
+total_energy$year <- as.numeric(total_energy$year)
+total_energy %>% head(10)
+```
+
+### Renewable Energy Data Set
+
+```{r}
+## obtaining a data set for total energy renewable energy production
+renewable <- energy_types %>%
+  dplyr::group_by(country_name, country) %>%
+  dplyr::reframe( energytotal_2016 = sum(`2016`),
+                   energytotal_2017 = sum(`2017`),
+                   energytotal_2018 = sum(`2018`)) %>%
+  dplyr::ungroup()  %>%
+  dplyr::inner_join(energy_types, by = c("country", "country_name"))%>%
+  dplyr::select(country,country_name, type, `2016`, `2017`, `2018`) %>%
+dplyr::mutate(method = if_else(type %in% c('Hydro', 'Geothermal', 'Wind', 'Solar', 'Pumped hydro power' ),  'renewable', 'nonrenewable')) %>%
+  tidyr::pivot_longer(-c(country, country_name, type, method), names_to = 'year', values_to = 'energy_amount' ) %>%
+  dplyr::group_by(country, country_name, method, year )%>%
+  dplyr::summarise(energy_amount = sum(energy_amount), 
+                   .groups = "keep") %>%
+  dplyr::ungroup() 
+renewable$year <- gsub("energy_", "", renewable$year)
+renewable$year <- as.numeric(renewable$year)
+renewable %>% head(10)  
+```
+
+### Data Visualization
+
+```{r}
+# plot for the breakdown of the total energy produced 
+## in 2016 by country and energy type
+## energy in the data set is recorded in GW, 
+## to make visualization easier all energy values are divided by a 1000
+energy_types %>% 
+  dplyr::select(-c(`2017`,`2018`)) %>% 
+  dplyr::group_by(country_name) %>% 
+  dplyr::mutate(energy_total = sum(`2016`),
+    `2016` = `2016`) %>% 
+  purrr::modify_if(is.numeric, ~.x/1000) %>% 
+  ggplot(aes(fct_reorder(country_name, energy_total, .desc= TRUE), 
+             `2016`, fill = type))+
+  geom_col()+
+  labs(fill = "Energy Type",
+       y = "Energy (GW/1000)")+
+  theme(axis.text.y = element_text(size = 5.5, face = "bold"),
+        panel.background = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5)) +
+  coord_flip() +
+  ggtitle("Figure 1: European Energy Producion in 2016")+
+  scale_fill_brewer(palette = "Paired") 
+```
+
+```{r}
+# plot for the breakdown of the total energy produced 
+## in 2017 by country and energy type
+## all energy values are divided by a 1000
+energy_types %>% 
+  dplyr::select(-c(`2016`,`2018`)) %>% 
+  dplyr::group_by(country_name) %>% 
+  dplyr::mutate(energy_total = sum(`2017`),
+    `2017` = `2017`) %>% 
+  purrr::modify_if(is.numeric, ~.x/1000) %>% 
+  ggplot(aes(fct_reorder(country_name, energy_total, .desc= TRUE), 
+             `2017`, fill = type))+
+ geom_col()+
+  labs(fill = "Energy Type",
+       y = "Energy (GW/1000)")+
+  theme(axis.text.y = element_text(size = 5.5, face="bold"),
+        panel.background = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5)) +
+  coord_flip() +
+  ggtitle("Figure 2:European Energy Production in 2017")+
+  scale_fill_brewer(palette = "Paired") 
+```
+
+```{r}
+# plot for the breakdown of the total energy produced 
+## in 2018 by country and energy type
+## all energy values are divided by a 1000
+energy_types %>% 
+  select(-c(`2016`,`2017`)) %>% 
+  group_by(country_name) %>% 
+  mutate(energy_total = sum(`2018`),
+    `2018` = `2018`) %>% 
+  modify_if(is.numeric, ~.x/1000) %>% 
+  ggplot(aes(fct_reorder(country_name, energy_total, .desc= TRUE), 
+             `2018`, fill = type))+
+   geom_col()+
+  labs(fill = "Energy Type",
+       y = "Energy (GW/1000)")+
+  theme(axis.text.y = element_text(size = 5.5, face ="bold"),
+        panel.background = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5)) +
+  coord_flip() +
+  ggtitle("Figure 3: European Energy Production in 2018")+
+  scale_fill_brewer(palette = "Paired") 
+```
+
+As depicted by Figures 1-3 above, Germany, France, and the United Kingdom were Europe's largest energy producers in all three years.\
+
+Furthermore, the same countries were the top ten energy producers in all three years.
+
+```{r}
+# visualizing renewable and nonrenewable energy production 
+## by the ten countries with the largest total energy production 
+## during 2016, 2017, and 2018. All energy values are divided by a 1000
+renewable %>%
+  purrr::modify_at(5,~.x/1000)%>%
+  dplyr::filter(country %in% c("DE","FR","UK","TR","IT","ES","UA","SE","PL","NO"))%>%
+  ggplot( aes(fct_reorder(country_name, energy_amount, .desc= TRUE), 
+              energy_amount, fill = method)) +
+  geom_col() + 
+  facet_wrap(~year, nrow = 3)+
+  labs(fill = "Energy Type",
+       y = "Energy (GW/1000)")+
+  theme(axis.text.y = element_text(size = 5.5, face = "bold"),
+        panel.background = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5)) +
+  coord_flip() +
+  ggtitle("Figure 4: Renewable and Non-Renewable Energy Production")+
+  scale_fill_brewer(palette = "Set2") 
+```
+
+As depicted in Figure 4, except for Norway, most countries produce a higher portion of their yearly energy from nonrenewable sources.
+
+### Relationship Between Future and Past Energy Production
+
+```{r message=FALSE}
+# Visualization of the relationship between total energy produced in 2018 
+# to the total energy produced in 2016 and 2017.
+total_energy %>% 
+  purrr::modify_at(4,~.x/1000)%>% 
+  tidyr::pivot_wider(values_from = energy_amount, names_from = year) %>% 
+  ggplot(aes(`2016`,`2017`, color = `2018`))+
+  geom_jitter(size= 5.5, shape = 19, alpha = .5)+
+  geom_smooth(method = lm, se = FALSE,fullrange=TRUE,color="steelblue", lwd = .7) +
+  scale_color_gradient(low = "lightseagreen", high = "purple") +
+  labs(color = "2018 (GW/1000)",
+       y = "2017 (GW/1000)",
+       x= "2016 (GW/1000)",
+       subtitle = "Compared to 2016 and 2017")+
+  theme(panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5),
+        plot.subtitle = element_text(hjust=0.5)) +
+  ggtitle("Figure 5: Total Energy Production in 2018")    
+
+```
+
+```{r message=FALSE}
+# Visualization of the relationship between renewable energy produced in 2018 
+# to the renewable energy produced in 2016 and 2017.
+renewable %>% 
+  dplyr::filter(method == "renewable") %>% 
+  purrr::modify_at(5,~.x/1000)%>% 
+  tidyr::pivot_wider(values_from = energy_amount, names_from = year) %>% 
+  ggplot(aes(`2016`,`2017`, color = `2018`))+
+  geom_jitter(size= 5.5, shape = 19, alpha = .5)+
+  geom_smooth(method = lm, se = FALSE,fullrange=TRUE,color="steelblue", lwd = .7) +
+  scale_color_gradient(low = "lightseagreen", high = "purple") +
+  labs(color = "2018 (GW/1000)",
+       y = "2017 (GW/1000)",
+       x= "2016 (GW/1000)",
+       subtitle = "Related to 2016 and 2017")+
+  theme(panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5),
+        plot.subtitle = element_text(hjust=0.5)) +
+  ggtitle("Figure 6: Renewable Energy Production in 2018")    
+
+```
+
+Figures 5 and 6 show a positive linear relationship between total and renewable energy produced in 2018, 2017, and 2016. Therefore, a linear model can be an appropriate prediction model for future total and renewable energy production in Europe.
+
+## Prediction Model
+
+### Total Energy Production
+
+```{r}
+# creating columns for total energy produced during each year
+# and dividing energy by 1000
+df_1 <- total_energy %>% 
+  purrr::modify_at(4,~.x/1000)%>% 
+  tidyr::pivot_wider(values_from = energy_amount, names_from = year) 
+
+# splitting the data into 80% training and 20% testing sets
+set.seed(444)
+data_split <- initial_split(df_1 , prop = 4/5)
+train_total<- training(data_split)
+test_total <- testing(data_split)
+```
+
+```{r}
+# data pre-processing 
+# set recipe - 2018 data is the dependent variable
+## 2017 and 2016 daata re the predictors
+tenergy_recipe <- recipe(`2018` ~ ., data =  train_total) %>% 
+  update_role(country, country_name, new_role = "ID")
+# specifying a linear regression model
+tenergy_model <- 
+  linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+# workflow
+tenergy_wf <- 
+  workflow() %>% 
+  add_model(tenergy_model) %>% 
+  add_recipe(tenergy_recipe)
+# fit model to training set
+fit_tenergy <- 
+  tenergy_wf %>% 
+  fit(data = train_total)
+```
+
+```{r}
+# extract the trained model
+lm_fit <- fit_tenergy %>% 
+  extract_fit_parsnip()
+# model coefficients 
+tidy(lm_fit)
+```
+
+The p-values for the coefficients might indicate that the total energy produced in 2016 and 2017 are not significant predictors of the total energy produced in 2018.
+
+```{r}
+#model performance on training set
+glance(lm_fit)
+```
+
+The $R^2$ and adjusted $R^2$ values indicate good model performance on the training data set.
+
+```{r}
+# diagnostic plots
+plot(lm_fit$fit, pch = 16,col = "steelblue")
+```
+
+There are a couple of outliers in the data.
+
+```{r}
+# fitting the model on th test set and 
+# adding predictions to the test set
+total_pred <- predict(lm_fit, new_data = test_total) %>% 
+                            bind_cols(test_total)
+# root mean squared error
+rmse_total <- rmse(total_pred, truth = `2018`,estimate = .pred)
+rmse_total 
+```
+
+```{r}
+# R-square for test set
+r_2_total  <- rsq(total_pred,truth = `2018`,estimate = .pred)
+r_2_total
+```
+
+The $R^2$ value for the testing set also indicates good model performance.
+
+### Renewable Energy Production
+
+```{r}
+# creating columns for total renewable energy produced during each year
+# and dividing energy by 1000
+
+df_2 <- as.data.frame(split(renewable, renewable$method)[2]) %>% 
+  modify_at(5,~.x/1000)%>% 
+  pivot_wider(values_from = renewable.energy_amount, names_from = renewable.year) 
+
+# splitting the data into 80% training and 20% testing sets
+set.seed(444)
+data_split <- initial_split(df_2 , prop = 4/5)
+train_renew<- training(data_split)
+test_renew <- testing(data_split)
+```
+
+```{r}
+# data pre-processing 
+# set recipe 
+# 2018 data is the dependent variable
+## 2017 and 2016 daata re the predictors
+renewable_recipe <- recipe(`2018` ~ ., data =  train_renew)%>% 
+  update_role(renewable.country, 
+              renewable.country_name,
+              renewable.method, 
+              new_role = "ID")
+# specifying a linear regression model
+renewable_model <- 
+  linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+# workflow
+renewable_wf <- 
+  workflow() %>% 
+  add_model(renewable_model) %>% 
+  add_recipe(renewable_recipe)
+# fit model to training set
+fit_renewable <- 
+  renewable_wf %>% 
+  fit(data = train_renew)
+```
+
+```{r}
+# extract the trained model
+lm_fit_renew <- fit_renewable %>% 
+  extract_fit_parsnip()
+# model coefficients 
+tidy(lm_fit_renew)
+```
+
+The p-values for the coefficients are very small, thus indicating that the amount of renewable energy produced in 2016 and 2017 is a significant predictor of the renewable energy produced in 2018.
+
+```{r}
+#model performance on training set
+glance(lm_fit_renew)
+```
+
+The $R^2$ and adjusted $R^2$ values indicate good model performance on the training data set.
+
+```{r}
+plot(lm_fit_renew$fit, pch = 16,col = "slateblue")
+```
+
+There are outliers in the data.
+
+```{r}
+# fitting the model on th test set and 
+# adding predictions to the test set
+renewable_pred <- predict(lm_fit_renew, new_data = test_renew) %>% 
+  bind_cols(test_renew)
+# root mean squared error
+rmse_renewable <- rmse(renewable_pred,truth = `2018`,estimate = .pred)
+rmse_renewable 
+```
+
+```{r}
+# R-square for test set
+r_2_renew <- rsq(renewable_pred,truth = `2018`,estimate = .pred)
+r_2_renew
+```
+
+The $R^2$ value for the testing set also indicates good model performance.
+
+```{r}
+# linear fit results
+# R-square plot for test set 
+ggplot(renewable_pred, aes(x = .pred, y = `2018`)) +
+  geom_point(size= 3, shape = 19,color = 'darkolivegreen') +
+  geom_abline(aes(color = "Ideal = 1", slope = 1, intercept= 0), show.legend = TRUE)+
+  geom_smooth(method = lm, se = FALSE, aes(color= "Model = 0.997"), lwd = .7) +
+  labs(y = "Actual Energy (GW/1000)",
+       x= "Predicted Energy (GW/1000)",
+       subtitle = "Renewable Energy Model Performance", 
+       color = "R-squared Value")+
+  theme(panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust=0.5),
+        plot.subtitle = element_text(hjust=0.5) ) +
+  ggtitle("Figure 7: R-Square Plot for Test Data Set")+
+  scale_color_brewer(palette = "Set2") 
+
+```
+
+## Summary
+
+This analysis uses linear regression to construct prediction models for total and renewable energy production in Europe using data from previous years. Even though both models performed well on the testing set, they didn't account for other factors that might affect energy production. Nonetheless, the models used in this analysis can be a reasonable initial step for making predictions about future energy demand.
+
+### List of functions
+
+1.  `xda` - `numSummary()`, `charSummary()`\
+2.  `tidyr` - `pivot_longer()`, `pivot_wider()`\
+3.  `purrr` - `modify_if()`, `modify_at()`\
+4.  `ggplot2` - `geom_col()`, `geom_point()`, `geom_abline()`, `geom_smooth()`, `geom_jitter()`\
+5.  `tidyTuedayR` - `tt_load()`\
+6.  `dplyr` - `filter()`, `mutate()`, `mutate_if()`, `group_by()`, `reframe()`, `ungroup()`, `inner_join()`, `summarise()`, `select()` 
+7.  `forcats` - `fct_reorder()`\
+8.  `tidymodels` - `rmse()`, `rsq()`, `glance()`, `tidy()`, `fit()`, `recepie()`, `workflow()`, `linear_reg()`
